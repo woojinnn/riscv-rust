@@ -3051,6 +3051,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		},
 		disassemble: dump_format_s,
 	},
+	// Refer SC.B for comments
 	Instruction {
 		mask: 0xf800707f,
 		data: 0x1800302f,
@@ -3058,23 +3059,24 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
 			// @TODO: Implement properly
-			cpu.x[f.rd] = match cpu.is_reservation_set && cpu.reservation == (cpu.x[f.rs1] as u64) {
-				true => match cpu
+			cpu.x[f.rd] = if !(cpu.is_reservation_set && cpu.reservation == (cpu.x[f.rs1] as u64)) {
+				1
+			} else {
+				match cpu
 					.mmu
 					.store_doubleword(cpu.x[f.rs1] as u64, cpu.x[f.rs2] as u64)
 				{
-					Ok(()) => {
-						cpu.is_reservation_set = false;
-						0
-					}
+					Ok(()) => 0,
 					Err(e) => return Err(e),
-				},
-				false => 1,
+				}
 			};
+			cpu.is_reservation_set = false;
 			Ok(())
 		},
 		disassemble: dump_format_r,
 	},
+	// Store-Conditional Word
+	// SC.W conditionally writes a word in rs2 to the address in rs1:
 	Instruction {
 		mask: 0xf800707f,
 		data: 0x1800202f,
@@ -3082,16 +3084,22 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
 			// @TODO: Implement properly
-			cpu.x[f.rd] = match cpu.is_reservation_set && cpu.reservation == (cpu.x[f.rs1] as u64) {
-				true => match cpu.mmu.store_word(cpu.x[f.rs1] as u64, cpu.x[f.rs2] as u32) {
-					Ok(()) => {
-						cpu.is_reservation_set = false;
-						0
-					}
-					Err(e) => return Err(e),
-				},
-				false => 1,
+			//
+			// the SC.W succeeds only if the reservation is still valid and the reservation set contains the
+			// bytes being written.
+			cpu.x[f.rd] = if !(cpu.is_reservation_set && cpu.reservation == (cpu.x[f.rs1] as u64)) {
+				// If the SC.W fails, the instruction does not write to memory, and it writes a nonzero value to rd.
+				1
+			} else {
+				// If the SC.W succeeds, the instruction writes the word in rs2 to memory, and it writes zero to rd.
+				// @TODO: Should consider RV32 or RV64
+				match cpu.mmu.store_word(cpu.x[f.rs1] as u64, cpu.x[f.rs2] as u32) {
+					Ok(()) => 0,
+					Err(e) => return Err(e), // @TODO: can we return here?s
+				}
 			};
+			// Regardless of success or failure, executing an SC.W instruction invalidates any reservation held by this hart
+			cpu.is_reservation_set = false;
 			Ok(())
 		},
 		disassemble: dump_format_r,
@@ -3184,10 +3192,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "SLT",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
-			cpu.x[f.rd] = match cpu.x[f.rs1] < cpu.x[f.rs2] {
-				true => 1,
-				false => 0,
-			};
+			cpu.x[f.rd] = if cpu.x[f.rs1] < cpu.x[f.rs2] { 1 } else { 0 };
 			Ok(())
 		},
 		disassemble: dump_format_r,
@@ -3198,10 +3203,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "SLTI",
 		operation: |cpu, word, _address| {
 			let f = parse_format_i(word);
-			cpu.x[f.rd] = match cpu.x[f.rs1] < f.imm {
-				true => 1,
-				false => 0,
-			};
+			cpu.x[f.rd] = if cpu.x[f.rs1] < f.imm { 1 } else { 0 };
 			Ok(())
 		},
 		disassemble: dump_format_i,
@@ -3212,9 +3214,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "SLTIU",
 		operation: |cpu, word, _address| {
 			let f = parse_format_i(word);
-			cpu.x[f.rd] = match cpu.unsigned_data(cpu.x[f.rs1]) < cpu.unsigned_data(f.imm) {
-				true => 1,
-				false => 0,
+			cpu.x[f.rd] = if cpu.unsigned_data(cpu.x[f.rs1]) < cpu.unsigned_data(f.imm) {
+				1
+			} else {
+				0
 			};
 			Ok(())
 		},
@@ -3226,9 +3229,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "SLTU",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
-			cpu.x[f.rd] = match cpu.unsigned_data(cpu.x[f.rs1]) < cpu.unsigned_data(cpu.x[f.rs2]) {
-				true => 1,
-				false => 0,
+			cpu.x[f.rd] = if cpu.unsigned_data(cpu.x[f.rs1]) < cpu.unsigned_data(cpu.x[f.rs2]) {
+				1
+			} else {
+				0
 			};
 			Ok(())
 		},
