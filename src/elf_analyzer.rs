@@ -79,15 +79,11 @@ impl ElfAnalyzer {
 	// @TODO: Validate more precisely
 	pub fn validate(&self) -> bool {
 		// check ELF magic number
-		if self.data.len() < 4
+		!(self.data.len() < 4
 			|| self.data[0] != 0x7f
 			|| self.data[1] != 0x45
 			|| self.data[2] != 0x4c
-			|| self.data[3] != 0x46
-		{
-			return false;
-		}
-		true
+			|| self.data[3] != 0x46)
 	}
 
 	/// Reads ELF header

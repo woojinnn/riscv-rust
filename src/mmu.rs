@@ -1,12 +1,11 @@
 /// DRAM base address. Offset from this base address
 /// is the address in main memory.
+
 pub const DRAM_BASE: u64 = 0x80000000;
 
 const DTB_SIZE: usize = 0xfe0;
 
 extern crate fnv;
-
-use std::fmt::Error;
 
 use self::fnv::FnvHashMap;
 
@@ -640,12 +639,9 @@ impl Mmu {
 	///
 	/// # Arguments
 	/// * `v_address` Virtual address
-	pub fn validate_address(&mut self, v_address: u64) -> Result<bool, Error> {
+	pub fn validate_address(&mut self, v_address: u64) -> Result<bool, ()> {
 		// @TODO: Support other access types?
-		let p_address = match self.translate_address(v_address, &MemoryAccessType::DontCare) {
-			Ok(address) => address,
-			Err(()) => return Err(Error::default()),
-		};
+		let p_address = self.translate_address(v_address, &MemoryAccessType::DontCare)?;
 		let effective_address = self.get_effective_address(p_address);
 		let valid = match effective_address >= DRAM_BASE {
 			true => self.memory.validate_address(effective_address),

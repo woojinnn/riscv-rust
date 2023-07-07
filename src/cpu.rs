@@ -2445,10 +2445,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "FEQ.D",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
-			cpu.x[f.rd] = match cpu.f[f.rs1] == cpu.f[f.rs2] {
-				true => 1,
-				false => 0,
-			};
+			cpu.x[f.rd] = if cpu.f[f.rs1] == cpu.f[f.rs2] { 1 } else { 0 };
 			Ok(())
 		},
 		disassemble: dump_empty,
@@ -2476,10 +2473,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "FLE.D",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
-			cpu.x[f.rd] = match cpu.f[f.rs1] <= cpu.f[f.rs2] {
-				true => 1,
-				false => 0,
-			};
+			cpu.x[f.rd] = if cpu.f[f.rs1] <= cpu.f[f.rs2] { 1 } else { 0 };
 			Ok(())
 		},
 		disassemble: dump_format_r,
@@ -2490,10 +2484,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "FLT.D",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
-			cpu.x[f.rd] = match cpu.f[f.rs1] < cpu.f[f.rs2] {
-				true => 1,
-				false => 0,
-			};
+			cpu.x[f.rd] = if cpu.f[f.rs1] < cpu.f[f.rs2] { 1 } else { 0 };
 			Ok(())
 		},
 		disassemble: dump_format_r,
