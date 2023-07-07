@@ -72,7 +72,7 @@ impl ElfAnalyzer {
 	/// # Arguments
 	/// * `data` ELF file content binary
 	pub fn new(data: Vec<u8>) -> Self {
-		ElfAnalyzer { data: data }
+		ElfAnalyzer { data }
 	}
 
 	/// Checks if ELF file content is valid
@@ -198,7 +198,7 @@ impl ElfAnalyzer {
 		*/
 
 		Header {
-			e_width: e_width,
+			e_width,
 			_e_class: e_class,
 			_e_endian: e_endian,
 			_e_elf_version: e_elf_version,
@@ -207,15 +207,15 @@ impl ElfAnalyzer {
 			_e_type: e_type,
 			_e_machine: e_machine,
 			_e_version: e_version,
-			e_entry: e_entry,
+			e_entry,
 			_e_phoff: e_phoff,
-			e_shoff: e_shoff,
+			e_shoff,
 			_e_flags: e_flags,
 			_e_ehsize: e_ehsize,
 			_e_phentsize: e_phentsize,
 			_e_phnum: e_phnum,
 			_e_shentsize: e_shentsize,
-			e_shnum: e_shnum,
+			e_shnum,
 			_e_shstrndx: e_shstrndx,
 		}
 	}
@@ -475,12 +475,12 @@ impl ElfAnalyzer {
 			*/
 
 			headers.push(SectionHeader {
-				sh_name: sh_name,
-				sh_type: sh_type,
+				sh_name,
+				sh_type,
 				_sh_flags: sh_flags,
-				sh_addr: sh_addr,
-				sh_offset: sh_offset,
-				sh_size: sh_size,
+				sh_addr,
+				sh_offset,
+				sh_size,
 				_sh_link: sh_link,
 				_sh_info: sh_info,
 				_sh_addralign: sh_addralign,
@@ -502,9 +502,9 @@ impl ElfAnalyzer {
 		symbol_table_section_headers: &Vec<&SectionHeader>,
 	) -> Vec<SymbolEntry> {
 		let mut entries = Vec::new();
-		for i in 0..symbol_table_section_headers.len() {
-			let sh_offset = symbol_table_section_headers[i].sh_offset;
-			let sh_size = symbol_table_section_headers[i].sh_size;
+		for s_header in symbol_table_section_headers {
+			let sh_offset = s_header.sh_offset;
+			let sh_size = s_header.sh_size;
 
 			let mut offset = sh_offset as usize;
 
@@ -576,12 +576,12 @@ impl ElfAnalyzer {
 				*/
 
 				entries.push(SymbolEntry {
-					st_name: st_name,
-					st_info: st_info,
-					_st_other: _st_other,
-					_st_shndx: _st_shndx,
-					st_value: st_value,
-					_st_size: _st_size,
+					st_name,
+					st_info,
+					_st_other,
+					_st_shndx,
+					st_value,
+					_st_size,
 				});
 			}
 		}
@@ -625,17 +625,17 @@ impl ElfAnalyzer {
 		string_table_section_header: &SectionHeader,
 	) -> FnvHashMap<String, u64> {
 		let mut map = FnvHashMap::default();
-		for i in 0..entries.len() {
-			let st_info = entries[i].st_info;
-			let st_name = entries[i].st_name;
-			let st_value = entries[i].st_value;
+		for entry in entries {
+			let st_info = entry.st_info;
+			let st_name = entry.st_name;
+			let st_value = entry.st_value;
 
 			// Stores only function and notype symbol
 			if (st_info & 0x2) != 0x2 && (st_info & 0xf) != 0 {
 				continue;
 			}
 
-			let symbol = self.read_strings(&string_table_section_header, st_name as u64);
+			let symbol = self.read_strings(string_table_section_header, st_name as u64);
 
 			if !symbol.is_empty() {
 				//println!("{} {:0x}", symbol, st_value);
@@ -657,15 +657,15 @@ impl ElfAnalyzer {
 		string_table_section_headers: &Vec<&SectionHeader>,
 	) -> Option<u64> {
 		let tohost_values = vec![0x2e, 0x74, 0x6f, 0x68, 0x6f, 0x73, 0x74, 0x00]; // ".tohost\null"
-		for i in 0..program_data_section_headers.len() {
-			let sh_addr = program_data_section_headers[i].sh_addr;
-			let sh_name = program_data_section_headers[i].sh_name as u64;
+		for header in program_data_section_headers {
+			let sh_addr = header.sh_addr;
+			let sh_name = header.sh_name as u64;
 			// Find all string sections so far.
 			// @TODO: Is there a way to know which string table section
 			//        sh_name of program data section points to?
-			for j in 0..string_table_section_headers.len() {
-				let sh_offset = string_table_section_headers[j].sh_offset;
-				let sh_size = string_table_section_headers[j].sh_size;
+			for header in string_table_section_headers {
+				let sh_offset = header.sh_offset;
+				let sh_size = header.sh_size;
 				let mut found = true;
 				for k in 0..tohost_values.len() as u64 {
 					let addr = sh_offset + sh_name + k;

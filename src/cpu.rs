@@ -2,59 +2,16 @@ extern crate fnv;
 
 use self::fnv::FnvHashMap;
 
+use csr_constants::*;
 use mmu::{AddressingMode, Mmu};
 use terminal::Terminal;
 
-const CSR_CAPACITY: usize = 4096;
-
-const CSR_USTATUS_ADDRESS: u16 = 0x000;
-const CSR_FFLAGS_ADDRESS: u16 = 0x001;
-const CSR_FRM_ADDRESS: u16 = 0x002;
-const CSR_FCSR_ADDRESS: u16 = 0x003;
-const CSR_UIE_ADDRESS: u16 = 0x004;
-const CSR_UTVEC_ADDRESS: u16 = 0x005;
-const _CSR_USCRATCH_ADDRESS: u16 = 0x040;
-const CSR_UEPC_ADDRESS: u16 = 0x041;
-const CSR_UCAUSE_ADDRESS: u16 = 0x042;
-const CSR_UTVAL_ADDRESS: u16 = 0x043;
-const _CSR_UIP_ADDRESS: u16 = 0x044;
-const CSR_SSTATUS_ADDRESS: u16 = 0x100;
-const CSR_SEDELEG_ADDRESS: u16 = 0x102;
-const CSR_SIDELEG_ADDRESS: u16 = 0x103;
-const CSR_SIE_ADDRESS: u16 = 0x104;
-const CSR_STVEC_ADDRESS: u16 = 0x105;
-const _CSR_SSCRATCH_ADDRESS: u16 = 0x140;
-const CSR_SEPC_ADDRESS: u16 = 0x141;
-const CSR_SCAUSE_ADDRESS: u16 = 0x142;
-const CSR_STVAL_ADDRESS: u16 = 0x143;
-const CSR_SIP_ADDRESS: u16 = 0x144;
-const CSR_SATP_ADDRESS: u16 = 0x180;
-const CSR_MSTATUS_ADDRESS: u16 = 0x300;
-const CSR_MISA_ADDRESS: u16 = 0x301;
-const CSR_MEDELEG_ADDRESS: u16 = 0x302;
-const CSR_MIDELEG_ADDRESS: u16 = 0x303;
-const CSR_MIE_ADDRESS: u16 = 0x304;
-
-const CSR_MTVEC_ADDRESS: u16 = 0x305;
-const _CSR_MSCRATCH_ADDRESS: u16 = 0x340;
-const CSR_MEPC_ADDRESS: u16 = 0x341;
-const CSR_MCAUSE_ADDRESS: u16 = 0x342;
-const CSR_MTVAL_ADDRESS: u16 = 0x343;
-const CSR_MIP_ADDRESS: u16 = 0x344;
-const _CSR_PMPCFG0_ADDRESS: u16 = 0x3a0;
-const _CSR_PMPADDR0_ADDRESS: u16 = 0x3b0;
-const _CSR_MCYCLE_ADDRESS: u16 = 0xb00;
-const CSR_CYCLE_ADDRESS: u16 = 0xc00;
-const CSR_TIME_ADDRESS: u16 = 0xc01;
-const _CSR_INSERT_ADDRESS: u16 = 0xc02;
-const _CSR_MHARTID_ADDRESS: u16 = 0xf14;
-
-const MIP_MEIP: u64 = 0x800;
-pub const MIP_MTIP: u64 = 0x080;
-pub const MIP_MSIP: u64 = 0x008;
-pub const MIP_SEIP: u64 = 0x200;
-const MIP_STIP: u64 = 0x020;
-const MIP_SSIP: u64 = 0x002;
+const MIP_MEIP: u64 = 0x800; // 1 << 11
+pub const MIP_MTIP: u64 = 0x080; // 1 << 7
+pub const MIP_MSIP: u64 = 0x008; // 1 << 3
+pub const MIP_SEIP: u64 = 0x200; // 1 << 9
+const MIP_STIP: u64 = 0x020; // 1 << 5
+const MIP_SSIP: u64 = 0x002; // 1 << 1
 
 /// Emulates a RISC-V CPU core
 pub struct Cpu {
@@ -62,12 +19,11 @@ pub struct Cpu {
 	xlen: Xlen,
 	privilege_mode: PrivilegeMode,
 	wfi: bool, // wait for interrupt
-	// using only lower 32bits of x, pc, and csr registers
-	// for 32-bit mode
-	x: [i64; 32],
-	f: [f64; 32],
+	// for 32-bit mode, use only lower 32bits of x, pc, and csr registers
+	x: [i64; 32], // general register
+	f: [f64; 32], // float register
 	pc: u64,
-	csr: [u64; CSR_CAPACITY],
+	csr: [u64; CSR_CAPACITY], // 32KB
 	mmu: Mmu,
 	reservation: u64, // @TODO: Should support multiple address reservations
 	is_reservation_set: bool,
@@ -182,8 +138,8 @@ fn _get_trap_type_name(trap_type: &TrapType) -> &'static str {
 
 fn get_trap_cause(trap: &Trap, xlen: &Xlen) -> u64 {
 	let interrupt_bit = match xlen {
-		Xlen::Bit32 => 0x80000000 as u64,
-		Xlen::Bit64 => 0x8000000000000000 as u64,
+		Xlen::Bit32 => 0x80000000_u64,
+		Xlen::Bit64 => 0x8000000000000000_u64,
 	};
 	match trap.trap_type {
 		TrapType::InstructionAddressMisaligned => 0,
@@ -257,7 +213,7 @@ impl Cpu {
 			Xlen::Bit32 => 0xffffffff,
 			Xlen::Bit64 => 0xffffffffffffffff,
 		};
-		self.mmu.update_xlen(xlen.clone());
+		self.mmu.update_xlen(xlen);
 	}
 
 	/// Reads integer register content
@@ -266,9 +222,11 @@ impl Cpu {
 	/// * `reg` Register number. Must be 0-31
 	pub fn read_register(&self, reg: u8) -> i64 {
 		debug_assert!(reg <= 31, "reg must be 0-31. {}", reg);
-		match reg {
-			0 => 0, // 0th register is hardwired zero
-			_ => self.x[reg as usize],
+		if reg == 0 {
+			// 0th register is hardwired zero
+			0
+		} else {
+			self.x[reg as usize]
 		}
 	}
 
@@ -296,6 +254,7 @@ impl Cpu {
 
 	// @TODO: Rename?
 	fn tick_operate(&mut self) -> Result<(), Trap> {
+		// Wait For Interrupt
 		if self.wfi {
 			if (self.read_csr_raw(CSR_MIE_ADDRESS) & self.read_csr_raw(CSR_MIP_ADDRESS)) != 0 {
 				self.wfi = false;
@@ -303,35 +262,27 @@ impl Cpu {
 			return Ok(());
 		}
 
-		let original_word = match self.fetch() {
-			Ok(word) => word,
-			Err(e) => return Err(e),
-		};
-		let instruction_address = self.pc;
-		let word = match (original_word & 0x3) == 0x3 {
-			true => {
-				self.pc = self.pc.wrapping_add(4); // 32-bit length non-compressed instruction
-				original_word
-			}
-			false => {
-				self.pc = self.pc.wrapping_add(2); // 16-bit length compressed instruction
-				self.uncompress(original_word & 0xffff)
-			}
+		// FETCH
+		let instr = self.fetch()?;
+		let pc = self.pc;
+		let word = if (instr & 0x3) == 0x3 {
+			self.pc = self.pc.wrapping_add(4); // 32-bit length non-compressed instruction
+			instr
+		} else {
+			self.pc = self.pc.wrapping_add(2); // 16-bit length compressed instruction
+			self.uncompress(instr & 0xffff)
 		};
 
 		match self.decode(word) {
 			Ok(inst) => {
-				let result = (inst.operation)(self, word, instruction_address);
+				let result = (inst.operation)(self, word, pc);
 				self.x[0] = 0; // hardwired zero
-				return result;
+				result
 			}
 			Err(()) => {
-				panic!(
-					"Unknown instruction PC:{:x} WORD:{:x}",
-					instruction_address, original_word
-				);
+				panic!("Unknown instruction PC:{:x} INSTR:{:x}", pc, instr);
 			}
-		};
+		}
 	}
 
 	/// Decodes a word instruction data and returns a reference to
@@ -339,16 +290,19 @@ impl Cpu {
 	/// so if cache hits this method returns the result very quickly.
 	/// The result will be stored to cache.
 	fn decode(&mut self, word: u32) -> Result<&Instruction, ()> {
-		match self.decode_cache.get(word) {
-			Some(index) => return Ok(&INSTRUCTIONS[index]),
-			None => match self.decode_and_get_instruction_index(word) {
-				Ok(index) => {
-					self.decode_cache.insert(word, index);
-					Ok(&INSTRUCTIONS[index])
-				}
-				Err(()) => Err(()),
-			},
+		if let Some(index) = self.decode_cache.get(word) {
+			// Cache hit
+			return Ok(&INSTRUCTIONS[index]);
 		}
+
+		// Cache miss
+		if let Ok(index) = self.decode_and_get_instruction_index(word) {
+			self.decode_cache.insert(word, index);
+			return Ok(&INSTRUCTIONS[index]);
+		}
+
+		// Cannot find the instruction
+		Err(())
 	}
 
 	/// Decodes a word instruction data and returns a reference to
@@ -368,21 +322,20 @@ impl Cpu {
 	/// # Arguments
 	/// * `word` word instruction data decoded
 	fn decode_and_get_instruction_index(&self, word: u32) -> Result<usize, ()> {
-		for i in 0..INSTRUCTION_NUM {
-			let inst = &INSTRUCTIONS[i];
-			if (word & inst.mask) == inst.data {
+		for (i, instr) in INSTRUCTIONS.iter().enumerate().take(INSTRUCTION_NUM) {
+			if (word & instr.mask) == instr.data {
 				return Ok(i);
 			}
 		}
-		return Err(());
+		Err(())
 	}
 
 	fn handle_interrupt(&mut self, instruction_address: u64) {
 		// @TODO: Optimize
 		let minterrupt = self.read_csr_raw(CSR_MIP_ADDRESS) & self.read_csr_raw(CSR_MIE_ADDRESS);
 
-		if (minterrupt & MIP_MEIP) != 0 {
-			if self.handle_trap(
+		if (minterrupt & MIP_MEIP) != 0
+			&& self.handle_trap(
 				Trap {
 					trap_type: TrapType::MachineExternalInterrupt,
 					value: self.pc, // dummy
@@ -390,17 +343,17 @@ impl Cpu {
 				instruction_address,
 				true,
 			) {
-				// Who should clear mip bit?
-				self.write_csr_raw(
-					CSR_MIP_ADDRESS,
-					self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_MEIP,
-				);
-				self.wfi = false;
-				return;
-			}
+			// Who should clear mip bit?
+			self.write_csr_raw(
+				CSR_MIP_ADDRESS,
+				self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_MEIP,
+			);
+			self.wfi = false;
+			return;
 		}
-		if (minterrupt & MIP_MSIP) != 0 {
-			if self.handle_trap(
+
+		if (minterrupt & MIP_MSIP) != 0
+			&& self.handle_trap(
 				Trap {
 					trap_type: TrapType::MachineSoftwareInterrupt,
 					value: self.pc, // dummy
@@ -408,16 +361,16 @@ impl Cpu {
 				instruction_address,
 				true,
 			) {
-				self.write_csr_raw(
-					CSR_MIP_ADDRESS,
-					self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_MSIP,
-				);
-				self.wfi = false;
-				return;
-			}
+			self.write_csr_raw(
+				CSR_MIP_ADDRESS,
+				self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_MSIP,
+			);
+			self.wfi = false;
+			return;
 		}
-		if (minterrupt & MIP_MTIP) != 0 {
-			if self.handle_trap(
+
+		if (minterrupt & MIP_MTIP) != 0
+			&& self.handle_trap(
 				Trap {
 					trap_type: TrapType::MachineTimerInterrupt,
 					value: self.pc, // dummy
@@ -425,16 +378,16 @@ impl Cpu {
 				instruction_address,
 				true,
 			) {
-				self.write_csr_raw(
-					CSR_MIP_ADDRESS,
-					self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_MTIP,
-				);
-				self.wfi = false;
-				return;
-			}
+			self.write_csr_raw(
+				CSR_MIP_ADDRESS,
+				self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_MTIP,
+			);
+			self.wfi = false;
+			return;
 		}
-		if (minterrupt & MIP_SEIP) != 0 {
-			if self.handle_trap(
+
+		if (minterrupt & MIP_SEIP) != 0
+			&& self.handle_trap(
 				Trap {
 					trap_type: TrapType::SupervisorExternalInterrupt,
 					value: self.pc, // dummy
@@ -442,16 +395,16 @@ impl Cpu {
 				instruction_address,
 				true,
 			) {
-				self.write_csr_raw(
-					CSR_MIP_ADDRESS,
-					self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_SEIP,
-				);
-				self.wfi = false;
-				return;
-			}
+			self.write_csr_raw(
+				CSR_MIP_ADDRESS,
+				self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_SEIP,
+			);
+			self.wfi = false;
+			return;
 		}
-		if (minterrupt & MIP_SSIP) != 0 {
-			if self.handle_trap(
+
+		if (minterrupt & MIP_SSIP) != 0
+			&& self.handle_trap(
 				Trap {
 					trap_type: TrapType::SupervisorSoftwareInterrupt,
 					value: self.pc, // dummy
@@ -459,16 +412,16 @@ impl Cpu {
 				instruction_address,
 				true,
 			) {
-				self.write_csr_raw(
-					CSR_MIP_ADDRESS,
-					self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_SSIP,
-				);
-				self.wfi = false;
-				return;
-			}
+			self.write_csr_raw(
+				CSR_MIP_ADDRESS,
+				self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_SSIP,
+			);
+			self.wfi = false;
+			return;
 		}
-		if (minterrupt & MIP_STIP) != 0 {
-			if self.handle_trap(
+
+		if (minterrupt & MIP_STIP) != 0
+			&& self.handle_trap(
 				Trap {
 					trap_type: TrapType::SupervisorTimerInterrupt,
 					value: self.pc, // dummy
@@ -476,13 +429,11 @@ impl Cpu {
 				instruction_address,
 				true,
 			) {
-				self.write_csr_raw(
-					CSR_MIP_ADDRESS,
-					self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_STIP,
-				);
-				self.wfi = false;
-				return;
-			}
+			self.write_csr_raw(
+				CSR_MIP_ADDRESS,
+				self.read_csr_raw(CSR_MIP_ADDRESS) & !MIP_STIP,
+			);
+			self.wfi = false
 		}
 	}
 
@@ -496,22 +447,24 @@ impl Cpu {
 
 		// First, determine which privilege mode should handle the trap.
 		// @TODO: Check if this logic is correct
-		let mdeleg = match is_interrupt {
-			true => self.read_csr_raw(CSR_MIDELEG_ADDRESS),
-			false => self.read_csr_raw(CSR_MEDELEG_ADDRESS),
+		let mdeleg = if is_interrupt {
+			self.read_csr_raw(CSR_MIDELEG_ADDRESS)
+		} else {
+			self.read_csr_raw(CSR_MEDELEG_ADDRESS)
 		};
-		let sdeleg = match is_interrupt {
-			true => self.read_csr_raw(CSR_SIDELEG_ADDRESS),
-			false => self.read_csr_raw(CSR_SEDELEG_ADDRESS),
+		let sdeleg = if is_interrupt {
+			self.read_csr_raw(CSR_SIDELEG_ADDRESS)
+		} else {
+			self.read_csr_raw(CSR_SEDELEG_ADDRESS)
 		};
 		let pos = cause & 0xffff;
 
-		let new_privilege_mode = match ((mdeleg >> pos) & 1) == 0 {
-			true => PrivilegeMode::Machine,
-			false => match ((sdeleg >> pos) & 1) == 0 {
-				true => PrivilegeMode::Supervisor,
-				false => PrivilegeMode::User,
-			},
+		let new_privilege_mode = if ((mdeleg >> pos) & 1) == 0 {
+			PrivilegeMode::Machine
+		} else if ((sdeleg >> pos) & 1) == 0 {
+			PrivilegeMode::Supervisor
+		} else {
+			PrivilegeMode::User
 		};
 		let new_privilege_encoding = get_privilege_encoding(&new_privilege_mode) as u64;
 
@@ -555,27 +508,31 @@ impl Cpu {
 			// 3. Interrupt is enabled if xIE in xstatus is 1 where x is privilege level
 			// and new privilege level equals to current privilege level
 
-			if new_privilege_encoding < current_privilege_encoding {
-				return false;
-			} else if current_privilege_encoding == new_privilege_encoding {
-				match self.privilege_mode {
-					PrivilegeMode::Machine => {
-						if current_mie == 0 {
-							return false;
+			match new_privilege_encoding.cmp(&current_privilege_encoding) {
+				std::cmp::Ordering::Less => {
+					return false;
+				}
+				std::cmp::Ordering::Equal => {
+					match self.privilege_mode {
+						PrivilegeMode::Machine => {
+							if current_mie == 0 {
+								return false;
+							}
 						}
-					}
-					PrivilegeMode::Supervisor => {
-						if current_sie == 0 {
-							return false;
+						PrivilegeMode::Supervisor => {
+							if current_sie == 0 {
+								return false;
+							}
 						}
-					}
-					PrivilegeMode::User => {
-						if current_uie == 0 {
-							return false;
+						PrivilegeMode::User => {
+							if current_uie == 0 {
+								return false;
+							}
 						}
-					}
-					PrivilegeMode::Reserved => panic!(),
-				};
+						PrivilegeMode::Reserved => panic!(),
+					};
+				}
+				std::cmp::Ordering::Greater => {}
 			}
 
 			// Interrupt can be maskable by xie csr register
@@ -697,14 +654,13 @@ impl Cpu {
 	}
 
 	fn fetch(&mut self) -> Result<u32, Trap> {
-		let word = match self.mmu.fetch_word(self.pc) {
-			Ok(word) => word,
+		match self.mmu.fetch_word(self.pc) {
+			Ok(instr) => Ok(instr),
 			Err(e) => {
 				self.pc = self.pc.wrapping_add(4); // @TODO: What if instruction is compressed?
-				return Err(e);
+				Err(e)
 			}
-		};
-		Ok(word)
+		}
 	}
 
 	fn has_csr_access_privilege(&self, address: u16) -> bool {
@@ -713,12 +669,13 @@ impl Cpu {
 	}
 
 	fn read_csr(&mut self, address: u16) -> Result<u64, Trap> {
-		match self.has_csr_access_privilege(address) {
-			true => Ok(self.read_csr_raw(address)),
-			false => Err(Trap {
+		if self.has_csr_access_privilege(address) {
+			Ok(self.read_csr_raw(address))
+		} else {
+			Err(Trap {
 				trap_type: TrapType::IllegalInstruction,
 				value: self.pc.wrapping_sub(4), // @TODO: Is this always correct?
-			}),
+			})
 		}
 	}
 
@@ -1393,7 +1350,7 @@ impl Cpu {
 		let mut s = format!("PC:{:016x} ", self.unsigned_data(self.pc as i64));
 		s += &format!("{:08x} ", original_word);
 		s += &format!("{} ", inst.name);
-		s += &format!("{}", (inst.disassemble)(self, word, self.pc, true));
+		s += &(inst.disassemble)(self, word, self.pc, true);
 		s
 	}
 
@@ -1442,7 +1399,7 @@ fn parse_format_b(word: u32) -> FormatB {
 fn dump_format_b(cpu: &mut Cpu, word: u32, address: u64, evaluate: bool) -> String {
 	let f = parse_format_b(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rs1));
+	s += get_register_name(f.rs1);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rs1]);
 	}
@@ -1471,7 +1428,7 @@ fn parse_format_csr(word: u32) -> FormatCSR {
 fn dump_format_csr(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_csr(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1511,7 +1468,7 @@ fn parse_format_i(word: u32) -> FormatI {
 fn dump_format_i(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_i(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1526,7 +1483,7 @@ fn dump_format_i(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> Str
 fn dump_format_i_mem(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_i(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1534,7 +1491,7 @@ fn dump_format_i_mem(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) ->
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rs1]);
 	}
-	s += &format!(")");
+	s += ")";
 	s
 }
 
@@ -1562,7 +1519,7 @@ fn parse_format_j(word: u32) -> FormatJ {
 fn dump_format_j(cpu: &mut Cpu, word: u32, address: u64, evaluate: bool) -> String {
 	let f = parse_format_j(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1570,6 +1527,7 @@ fn dump_format_j(cpu: &mut Cpu, word: u32, address: u64, evaluate: bool) -> Stri
 	s
 }
 
+// R-Type instruction format
 struct FormatR {
 	rd: usize,
 	rs1: usize,
@@ -1587,7 +1545,7 @@ fn parse_format_r(word: u32) -> FormatR {
 fn dump_format_r(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_r(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1602,6 +1560,7 @@ fn dump_format_r(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> Str
 	s
 }
 
+// R-Type instruction format
 // has rs3
 struct FormatR2 {
 	rd: usize,
@@ -1622,7 +1581,7 @@ fn parse_format_r2(word: u32) -> FormatR2 {
 fn dump_format_r2(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_r2(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1641,6 +1600,7 @@ fn dump_format_r2(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> St
 	s
 }
 
+// S-Type instruction format
 struct FormatS {
 	rs1: usize,
 	rs2: usize,
@@ -1666,7 +1626,7 @@ fn parse_format_s(word: u32) -> FormatS {
 fn dump_format_s(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_s(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rs2));
+	s += get_register_name(f.rs2);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rs2]);
 	}
@@ -1674,10 +1634,11 @@ fn dump_format_s(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> Str
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rs1]);
 	}
-	s += &format!(")");
+	s += ")";
 	s
 }
 
+// U-Type instruction format
 struct FormatU {
 	rd: usize,
 	imm: u64,
@@ -1693,14 +1654,14 @@ fn parse_format_u(word: u32) -> FormatU {
 			} | // imm[63:32] = [31]
 			((word as u64) & 0xfffff000)
 			// imm[31:12] = [31:12]
-		) as u64,
+		),
 	}
 }
 
 fn dump_format_u(cpu: &mut Cpu, word: u32, _address: u64, evaluate: bool) -> String {
 	let f = parse_format_u(word);
 	let mut s = String::new();
-	s += &format!("{}", get_register_name(f.rd));
+	s += get_register_name(f.rd);
 	if evaluate {
 		s += &format!(":{:x}", cpu.x[f.rd]);
 	}
@@ -1750,6 +1711,7 @@ fn get_register_name(num: usize) -> &'static str {
 	}
 }
 
+// Number of supported instructions
 const INSTRUCTION_NUM: usize = 116;
 
 // @TODO: Reorder in often used order as
@@ -1787,6 +1749,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		},
 		disassemble: dump_format_i,
 	},
+	// Addw
 	Instruction {
 		mask: 0xfe00707f,
 		data: 0x0000003b,
@@ -1820,16 +1783,20 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		},
 		disassemble: dump_format_r,
 	},
+	// <https://msyksphinz-self.github.io/riscv-isadoc/html/rva.html#amoadd-w>
 	Instruction {
 		mask: 0xf800707f,
 		data: 0x0000202f,
 		name: "AMOADD.W",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
+			// atomically load a 32-bit signed data from the address in rs1
 			let tmp = match cpu.mmu.load_word(cpu.x[f.rs1] as u64) {
 				Ok(data) => data as i32 as i64,
 				Err(e) => return Err(e),
 			};
+			// apply add to the {loaded value(tmp)} and the {original 32-bit signed value in rs2}
+			// then store the result back to the address in rs1.
 			match cpu
 				.mmu
 				.store_word(cpu.x[f.rs1] as u64, cpu.x[f.rs2].wrapping_add(tmp) as u32)
@@ -1837,6 +1804,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 				Ok(()) => {}
 				Err(e) => return Err(e),
 			};
+			// place the value into register rd
 			cpu.x[f.rd] = tmp;
 			Ok(())
 		},
@@ -2039,11 +2007,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		},
 		disassemble: dump_format_i,
 	},
+	// add upper immediate to pc
+	// x[rd] = pc + sext(immediate[31:12] << 12)
 	Instruction {
 		mask: 0x0000007f,
 		data: 0x00000017,
 		name: "AUIPC",
 		operation: |cpu, word, address| {
+			// address == pc
 			let f = parse_format_u(word);
 			cpu.x[f.rd] = cpu.sign_extend(address.wrapping_add(f.imm) as i64);
 			Ok(())
@@ -2055,6 +2026,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		data: 0x00000063,
 		name: "BEQ",
 		operation: |cpu, word, address| {
+			// address == pc
 			let f = parse_format_b(word);
 			if cpu.sign_extend(cpu.x[f.rs1]) == cpu.sign_extend(cpu.x[f.rs2]) {
 				cpu.pc = address.wrapping_add(f.imm);
@@ -2309,9 +2281,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 			if divisor == 0 {
 				cpu.x[f.rd] = -1;
 			} else if dividend == std::i32::MIN && divisor == -1 {
-				cpu.x[f.rd] = dividend as i32 as i64;
+				cpu.x[f.rd] = dividend as i64;
 			} else {
-				cpu.x[f.rd] = dividend.wrapping_div(divisor) as i32 as i64
+				cpu.x[f.rd] = dividend.wrapping_div(divisor) as i64
 			}
 			Ok(())
 		},
@@ -2338,10 +2310,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 				PrivilegeMode::Machine => TrapType::EnvironmentCallFromMMode,
 				PrivilegeMode::Reserved => panic!("Unknown Privilege mode"),
 			};
-			return Err(Trap {
+			Err(Trap {
 				trap_type: exception_type,
 				value: address,
-			});
+			})
 		},
 		disassemble: dump_empty,
 	},
@@ -2711,7 +2683,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		disassemble: |cpu, word, _address, evaluate| {
 			let f = parse_format_i(word);
 			let mut s = String::new();
-			s += &format!("{}", get_register_name(f.rd));
+			s += get_register_name(f.rd);
 			if evaluate {
 				s += &format!(":{:x}", cpu.x[f.rd]);
 			}
@@ -2719,7 +2691,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 			if evaluate {
 				s += &format!(":{:x}", cpu.x[f.rs1]);
 			}
-			s += &format!(")");
+			s += ")";
 			s
 		},
 	},
@@ -2898,7 +2870,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 			let f = parse_format_r(word);
 			cpu.x[f.rd] = match cpu.xlen {
 				Xlen::Bit32 => cpu.sign_extend((cpu.x[f.rs1] * cpu.x[f.rs2]) >> 32),
-				Xlen::Bit64 => ((cpu.x[f.rs1] as i128) * (cpu.x[f.rs2] as i128) >> 64) as i64,
+				Xlen::Bit64 => (((cpu.x[f.rs1] as i128) * (cpu.x[f.rs2] as i128)) >> 64) as i64,
 			};
 			Ok(())
 		},
@@ -2930,9 +2902,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
 			cpu.x[f.rd] = match cpu.xlen {
-				Xlen::Bit32 => cpu.sign_extend(
-					((cpu.x[f.rs1] as i64).wrapping_mul(cpu.x[f.rs2] as u32 as i64) >> 32) as i64,
-				),
+				Xlen::Bit32 => {
+					cpu.sign_extend((cpu.x[f.rs1]).wrapping_mul(cpu.x[f.rs2] as u32 as i64) >> 32)
+				}
 				Xlen::Bit64 => {
 					((cpu.x[f.rs1] as u128).wrapping_mul(cpu.x[f.rs2] as u64 as u128) >> 64) as i64
 				}
@@ -2953,15 +2925,16 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		},
 		disassemble: dump_format_r,
 	},
+	// <https://msyksphinz-self.github.io/riscv-isadoc/html/rvi.html?highlight=mret#mret>
 	Instruction {
 		mask: 0xffffffff,
 		data: 0x30200073,
 		name: "MRET",
+		//  Description
+		//
+		//  Return from traps in M-mode, and MRET copies MPIE into MIE, then sets MPIE.
 		operation: |cpu, _word, _address| {
-			cpu.pc = match cpu.read_csr(CSR_MEPC_ADDRESS) {
-				Ok(data) => data,
-				Err(e) => return Err(e),
-			};
+			cpu.pc = cpu.read_csr(CSR_MEPC_ADDRESS)?;
 			let status = cpu.read_csr_raw(CSR_MSTATUS_ADDRESS);
 			let mpie = (status >> 7) & 1;
 			let mpp = (status >> 11) & 0x3;
@@ -3303,7 +3276,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "SRAIW",
 		operation: |cpu, word, _address| {
 			let f = parse_format_r(word);
-			let shamt = ((word >> 20) & 0x1f) as u32;
+			let shamt = (word >> 20) & 0x1f;
 			cpu.x[f.rd] = ((cpu.x[f.rs1] as i32) >> shamt) as i64;
 			Ok(())
 		},
@@ -3326,10 +3299,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		name: "SRET",
 		operation: |cpu, _word, _address| {
 			// @TODO: Throw error if higher privilege return instruction is executed
-			cpu.pc = match cpu.read_csr(CSR_SEPC_ADDRESS) {
-				Ok(data) => data,
-				Err(e) => return Err(e),
-			};
+			cpu.pc = cpu.read_csr(CSR_SEPC_ADDRESS)?;
 			let status = cpu.read_csr_raw(CSR_SSTATUS_ADDRESS);
 			let spie = (status >> 5) & 1;
 			let spp = (status >> 8) & 1;
@@ -3441,20 +3411,32 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 		},
 		disassemble: dump_format_s,
 	},
+	// <https://msyksphinz-self.github.io/riscv-isadoc/html/rvi.html?highlight=mret#uret>
 	Instruction {
 		mask: 0xffffffff,
 		data: 0x00200073,
 		name: "URET",
+		// Return from traps in U-mode, and URET copies UPIE into UIE, then sets UPIE.
 		operation: |_cpu, _word, _address| {
 			// @TODO: Implement
 			panic!("URET instruction is not implemented yet.");
 		},
 		disassemble: dump_empty,
 	},
+	// <https://msyksphinz-self.github.io/riscv-isadoc/html/rvi.html?highlight=mret#wfi>
 	Instruction {
 		mask: 0xffffffff,
 		data: 0x10500073,
 		name: "WFI",
+		// Description:
+		//
+		// Provides a hint to the implementation that the **current hart can be stalled until an interrupt might need servicing.**
+		// Execution of the WFI instruction can also be used to **inform the hardware platform that suitable interrupts should preferentially be routed to this hart.**
+		// WFI is available in all privileged modes, and optionally available to U-mode.
+		// This instruction may raise an illegal instruction exception when TW=1 in mstatus.
+		//
+		// Implementation:
+		// while (noInterruptsPending) idle
 		operation: |cpu, _word, _address| {
 			cpu.wfi = true;
 			Ok(())
@@ -3552,7 +3534,7 @@ impl DecodeCache {
 
 		DecodeCache {
 			hash_map: FnvHashMap::default(),
-			entries: entries,
+			entries,
 			front_index: 0,
 			back_index: DECODE_CACHE_ENTRY_NUM - 1,
 			hit_count: 0,
@@ -3662,8 +3644,8 @@ impl DecodeCacheEntry {
 		DecodeCacheEntry {
 			word: 0,
 			instruction_index: INVALID_CACHE_ENTRY,
-			next_index: next_index,
-			prev_index: prev_index,
+			next_index,
+			prev_index,
 		}
 	}
 }

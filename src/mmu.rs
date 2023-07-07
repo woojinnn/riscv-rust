@@ -6,6 +6,8 @@ const DTB_SIZE: usize = 0xfe0;
 
 extern crate fnv;
 
+use std::fmt::Error;
+
 use self::fnv::FnvHashMap;
 
 use cpu::{get_privilege_mode, PrivilegeMode, Trap, TrapType, Xlen};
@@ -89,18 +91,16 @@ impl Mmu {
 
 		// Load default device tree binary content
 		let content = include_bytes!("./device/dtb.dtb");
-		for i in 0..content.len() {
-			dtb[i] = content[i];
-		}
+		dtb[..content.len()].copy_from_slice(&content[..]);
 
 		Mmu {
 			clock: 0,
-			xlen: xlen,
+			xlen,
 			ppn: 0,
 			addressing_mode: AddressingMode::None,
 			privilege_mode: PrivilegeMode::Machine,
 			memory: MemoryWrapper::new(),
-			dtb: dtb,
+			dtb,
 			disk: VirtioBlockDisk::new(),
 			plic: Plic::new(),
 			clint: Clint::new(),
@@ -143,9 +143,7 @@ impl Mmu {
 	/// # Arguments
 	/// * `data` DTB binary content
 	pub fn init_dtb(&mut self, data: Vec<u8>) {
-		for i in 0..data.len() {
-			self.dtb[i] = data[i];
-		}
+		self.dtb[..data.len()].copy_from_slice(&data[..]);
 		for i in data.len()..self.dtb.len() {
 			self.dtb[i] = 0;
 		}
@@ -231,12 +229,10 @@ impl Mmu {
 	fn fetch(&mut self, v_address: u64) -> Result<u8, Trap> {
 		match self.translate_address(v_address, &MemoryAccessType::Execute) {
 			Ok(p_address) => Ok(self.load_raw(p_address)),
-			Err(()) => {
-				return Err(Trap {
-					trap_type: TrapType::InstructionPageFault,
-					value: v_address,
-				})
-			}
+			Err(()) => Err(Trap {
+				trap_type: TrapType::InstructionPageFault,
+				value: v_address,
+			}),
 		}
 	}
 
@@ -261,7 +257,7 @@ impl Mmu {
 				}
 			}
 			false => {
-				let mut data = 0 as u32;
+				let mut data = 0_u32;
 				for i in 0..width {
 					match self.fetch(v_address.wrapping_add(i)) {
 						Ok(byte) => data |= (byte as u32) << (i * 8),
@@ -320,7 +316,7 @@ impl Mmu {
 				}),
 			},
 			false => {
-				let mut data = 0 as u64;
+				let mut data = 0_u64;
 				for i in 0..width {
 					match self.load(v_address.wrapping_add(i)) {
 						Ok(byte) => data |= (byte as u64) << (i * 8),
@@ -363,7 +359,7 @@ impl Mmu {
 	/// * `v_address` Virtual address
 	pub fn load_doubleword(&mut self, v_address: u64) -> Result<u64, Trap> {
 		match self.load_bytes(v_address, 8) {
-			Ok(data) => Ok(data as u64),
+			Ok(data) => Ok(data),
 			Err(e) => Err(e),
 		}
 	}
@@ -458,7 +454,7 @@ impl Mmu {
 	/// * `v_address` Virtual address
 	/// * `value` data written
 	pub fn store_doubleword(&mut self, v_address: u64, value: u64) -> Result<(), Trap> {
-		self.store_bytes(v_address, value as u64, 8)
+		self.store_bytes(v_address, value, 8)
 	}
 
 	/// Loads a byte from main memory or peripheral devices depending on
@@ -469,9 +465,10 @@ impl Mmu {
 	fn load_raw(&mut self, p_address: u64) -> u8 {
 		let effective_address = self.get_effective_address(p_address);
 		// @TODO: Mapping should be configurable with dtb
-		match effective_address >= DRAM_BASE {
-			true => self.memory.read_byte(effective_address),
-			false => match effective_address {
+		if effective_address >= DRAM_BASE {
+			self.memory.read_byte(effective_address)
+		} else {
+			match effective_address {
 				// I don't know why but dtb data seems to be stored from 0x1020 on Linux.
 				// It might be from self.x[0xb] initialization?
 				// And DTB size is arbitray.
@@ -481,7 +478,7 @@ impl Mmu {
 				0x10000000..=0x100000ff => self.uart.load(effective_address),
 				0x10001000..=0x10001FFF => self.disk.load(effective_address),
 				_ => panic!("Unknown memory mapping {:X}.", effective_address),
-			},
+			}
 		}
 	}
 
@@ -492,18 +489,15 @@ impl Mmu {
 	/// * `p_address` Physical address
 	fn load_halfword_raw(&mut self, p_address: u64) -> u16 {
 		let effective_address = self.get_effective_address(p_address);
-		match effective_address >= DRAM_BASE
-			&& effective_address.wrapping_add(1) > effective_address
-		{
+		if effective_address >= DRAM_BASE && effective_address.wrapping_add(1) > effective_address {
 			// Fast path. Directly load main memory at a time.
-			true => self.memory.read_halfword(effective_address),
-			false => {
-				let mut data = 0 as u16;
-				for i in 0..2 {
-					data |= (self.load_raw(effective_address.wrapping_add(i)) as u16) << (i * 8)
-				}
-				data
+			self.memory.read_halfword(effective_address)
+		} else {
+			let mut data = 0_u16;
+			for i in 0..2 {
+				data |= (self.load_raw(effective_address.wrapping_add(i)) as u16) << (i * 8)
 			}
+			data
 		}
 	}
 
@@ -514,18 +508,15 @@ impl Mmu {
 	/// * `p_address` Physical address
 	pub fn load_word_raw(&mut self, p_address: u64) -> u32 {
 		let effective_address = self.get_effective_address(p_address);
-		match effective_address >= DRAM_BASE
-			&& effective_address.wrapping_add(3) > effective_address
-		{
+		if effective_address >= DRAM_BASE && effective_address.wrapping_add(3) > effective_address {
 			// Fast path. Directly load main memory at a time.
-			true => self.memory.read_word(effective_address),
-			false => {
-				let mut data = 0 as u32;
-				for i in 0..4 {
-					data |= (self.load_raw(effective_address.wrapping_add(i)) as u32) << (i * 8)
-				}
-				data
+			self.memory.read_word(effective_address)
+		} else {
+			let mut data = 0_u32;
+			for i in 0..4 {
+				data |= (self.load_raw(effective_address.wrapping_add(i)) as u32) << (i * 8)
 			}
+			data
 		}
 	}
 
@@ -542,7 +533,7 @@ impl Mmu {
 			// Fast path. Directly load main memory at a time.
 			true => self.memory.read_doubleword(effective_address),
 			false => {
-				let mut data = 0 as u64;
+				let mut data = 0_u64;
 				for i in 0..8 {
 					data |= (self.load_raw(effective_address.wrapping_add(i)) as u64) << (i * 8)
 				}
@@ -649,23 +640,18 @@ impl Mmu {
 	///
 	/// # Arguments
 	/// * `v_address` Virtual address
-	pub fn validate_address(&mut self, v_address: u64) -> Result<bool, ()> {
+	pub fn validate_address(&mut self, v_address: u64) -> Result<bool, Error> {
 		// @TODO: Support other access types?
 		let p_address = match self.translate_address(v_address, &MemoryAccessType::DontCare) {
 			Ok(address) => address,
-			Err(()) => return Err(()),
+			Err(()) => return Err(Error::default()),
 		};
 		let effective_address = self.get_effective_address(p_address);
 		let valid = match effective_address >= DRAM_BASE {
 			true => self.memory.validate_address(effective_address),
-			false => match effective_address {
-				0x00001020..=0x00001fff => true,
-				0x02000000..=0x0200ffff => true,
-				0x0C000000..=0x0fffffff => true,
-				0x10000000..=0x100000ff => true,
-				0x10001000..=0x10001FFF => true,
-				_ => false,
-			},
+			false => {
+				matches!(effective_address, 0x00001020..=0x00001fff | 0x02000000..=0x0200ffff | 0x0C000000..=0x0fffffff | 0x10000000..=0x100000ff | 0x10001000..=0x10001FFF)
+			}
 		};
 		Ok(valid)
 	}
@@ -718,7 +704,7 @@ impl Mmu {
 						},
 						PrivilegeMode::User | PrivilegeMode::Supervisor => {
 							let vpns = [(address >> 12) & 0x3ff, (address >> 22) & 0x3ff];
-							self.traverse_page(address, 2 - 1, self.ppn, &vpns, &access_type)
+							self.traverse_page(address, 2 - 1, self.ppn, &vpns, access_type)
 						}
 						_ => Ok(address),
 					},
@@ -754,7 +740,7 @@ impl Mmu {
 								(address >> 21) & 0x1ff,
 								(address >> 30) & 0x1ff,
 							];
-							self.traverse_page(address, 3 - 1, self.ppn, &vpns, &access_type)
+							self.traverse_page(address, 3 - 1, self.ppn, &vpns, access_type)
 						}
 						_ => Ok(address),
 					},

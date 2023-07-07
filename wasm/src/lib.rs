@@ -192,7 +192,7 @@ impl WasmRiscv {
 						return 0;
 					}
 				}
-				Err(()) => {
+				Err(_error) => {
 					error[0] = 1;
 					return 0;
 				}

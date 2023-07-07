@@ -29,6 +29,12 @@ impl DummyTerminal {
 	}
 }
 
+impl Default for DummyTerminal {
+	fn default() -> Self {
+		DummyTerminal::new()
+	}
+}
+
 impl Terminal for DummyTerminal {
 	fn put_byte(&mut self, _value: u8) {}
 	fn get_input(&mut self) -> u8 {
